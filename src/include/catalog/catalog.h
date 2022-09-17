@@ -77,14 +77,46 @@ class Catalog {
    */
   TableMetadata *CreateTable(Transaction *txn, const std::string &table_name, const Schema &schema) {
     BUSTUB_ASSERT(names_.count(table_name) == 0, "Table names should be unique!");
-    return nullptr;
+    // 构造一个由Catalog.(bpm_, lock_manager_, log_manager_),txn构造得到的TableHeap的智能指针
+    std::unique_ptr<TableHeap> table_heap = std::make_unique<TableHeap>(bpm_, lock_manager_, log_manager_, txn);
+
+    std::unique_ptr<TableMetadata> table_meta_data =
+        std::make_unique<TableMetadata>(schema, table_name, std::move(table_heap), next_table_oid_);
+
+    // 返回指向被管理对象的指针
+    TableMetadata *result = table_meta_data.get();
+
+    tables_.emplace(result->oid_, std::move(table_meta_data));
+    names_.emplace(result->name_, result->oid_);
+
+    next_table_oid_++;
+
+    return result;
   }
 
   /** @return table metadata by name */
-  TableMetadata *GetTable(const std::string &table_name) { return nullptr; }
+  TableMetadata *GetTable(const std::string &table_name) {
+    std::unordered_map<std::string, table_oid_t>::iterator name_it = names_.find(table_name);
+
+    // Catalog.names_中找不到该表名的表
+    if (name_it == names_.end()) {
+      throw std::out_of_range("Catalog.GetTable: can not find table by table name.");
+    }
+
+    // 根据找到的bustub::table_oid_t调用下一级GetTable获得对应的TableMetadata * 指针
+    return GetTable(name_it->second);
+  }
 
   /** @return table metadata by oid */
-  TableMetadata *GetTable(table_oid_t table_oid) { return nullptr; }
+  TableMetadata *GetTable(table_oid_t table_oid) {
+    std::unordered_map<table_oid_t, std::unique_ptr<TableMetadata>>::iterator table_it = tables_.find(table_oid);
+
+    if (table_it == tables_.end()) {
+      throw std::out_of_range("Catalog.GetTable: can not find table by table oid.");
+    }
+
+    return table_it->second.get();
+  }
 
   /**
    * Create a new index, populate existing data of the table and return its metadata.
@@ -101,14 +133,82 @@ class Catalog {
   IndexInfo *CreateIndex(Transaction *txn, const std::string &index_name, const std::string &table_name,
                          const Schema &schema, const Schema &key_schema, const std::vector<uint32_t> &key_attrs,
                          size_t keysize) {
-    return nullptr;
+    std::unique_ptr<IndexMetadata> index_meta_data =
+        std::make_unique<IndexMetadata>(std::string(index_name), std::string(table_name), &schema, key_attrs);
+
+    std::unique_ptr<Index> index = std::make_unique<BPLUSTREE_INDEX_TYPE>(index_meta_data.release(), bpm_);
+
+    std::unique_ptr<IndexInfo> index_info = std::make_unique<IndexInfo>(
+        key_schema, std::string(index_name), std::move(index), next_index_oid_, std::string(table_name), keysize);
+
+    IndexInfo *result = index_info.get();
+
+    indexes_.emplace(result->index_oid_, std::move(index_info));
+
+    // 根据result->table_name_从index_names_ map数组中找到指定的std::unordered_map<std::string, index_oid_t>
+    // 在指定的map中插入元素(result->name_, result->index_oid_)
+    index_names_[result->table_name_].emplace(result->name_, result->index_oid_);
+    next_index_oid_++;
+
+    // 填充表的现有数据
+    TableMetadata *table_meta_data = GetTable(result->table_name_);
+    TableHeap *table_heap = table_meta_data->table_.get();
+    for (TableIterator it = table_heap->Begin(txn); it != table_heap->End(); it++) {
+      result->index_->InsertEntry(it->KeyFromTuple(schema, result->key_schema_, result->index_->GetKeyAttrs()),
+                                  it->GetRid(), txn);
+    }
+
+    return result;
   }
 
-  IndexInfo *GetIndex(const std::string &index_name, const std::string &table_name) { return nullptr; }
+  IndexInfo *GetIndex(const std::string &index_name, const std::string &table_name) {
+     std::unordered_map<std::string, std::unordered_map<std::string, index_oid_t>>::iterator index_name_it =
+        index_names_.find(table_name);
 
-  IndexInfo *GetIndex(index_oid_t index_oid) { return nullptr; }
+    if (index_name_it == index_names_.end()) {
+      throw std::out_of_range("GetIndex: cannot find index by table name.");
+    }
 
-  std::vector<IndexInfo *> GetTableIndexes(const std::string &table_name) { return std::vector<IndexInfo *>(); }
+    std::unordered_map<std::string, index_oid_t> inner_map = index_name_it->second;
+    std::unordered_map<std::string, index_oid_t>::iterator inner_it = inner_map.find(index_name);
+
+    if (inner_it == inner_map.end()) {
+      throw std::out_of_range("GetIndex: cannot find index by index name.");
+    }
+
+    return GetIndex(inner_it->second);
+  }
+
+  IndexInfo *GetIndex(index_oid_t index_oid) {
+    std::unordered_map<index_oid_t, std::unique_ptr<IndexInfo>>::iterator index_it = indexes_.find(index_oid);
+    if (index_it == indexes_.end()) {
+      throw std::out_of_range("GetIndex: cannot find index by index oid.");
+    }
+
+    return index_it->second.get();
+  }
+
+  std::vector<IndexInfo *> GetTableIndexes(const std::string &table_name) {
+    std::vector<IndexInfo *> result;
+    std::unordered_map<std::string, std::unordered_map<std::string, index_oid_t>>::iterator index_name_it =
+        index_names_.find(table_name);
+
+    if (index_name_it == index_names_.end()) {
+      return result;
+    }
+
+    std::unordered_map<std::string, index_oid_t> inner_map = index_name_it->second;
+
+    // 将整个范围内的inner_map的元素执行变换策略(lambda表达式)
+    // 并将结果存储到result中
+    // 变换策略为对inner_map中的元素std::pair<std::string, index_oid_t>
+    // 在indexes_中根据index_oid_t找到对应的std::unique_ptr<IndexInfo>
+    // 找到的IndexInfo *存储到result中
+    std::transform(inner_map.begin(), inner_map.end(), std::back_inserter(result),
+                   [&idx_map = indexes_](auto pair) { return idx_map[pair.second].get(); });
+
+    return result;
+  }
 
  private:
   [[maybe_unused]] BufferPoolManager *bpm_;

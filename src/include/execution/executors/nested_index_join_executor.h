@@ -31,6 +31,10 @@ namespace bustub {
  * IndexJoinExecutor executes index join operations.
  */
 class NestIndexJoinExecutor : public AbstractExecutor {
+  using KeyType = GenericKey<8>;
+  using ValueType = RID;
+  using KeyComparator = GenericComparator<8>;
+
  public:
   /**
    * Creates a new nested index join executor.
@@ -50,5 +54,20 @@ class NestIndexJoinExecutor : public AbstractExecutor {
  private:
   /** The nested index join plan node. */
   const NestedIndexJoinPlanNode *plan_;
+
+  // lab3 task2 add
+  /** Metadata identifying the inner table that should be fetched. */
+  const TableMetadata *inner_table_info_;
+  /** Index info identifying the index of the inner table to be probed */
+  /** 标识了要探测的innerTable的索引 的索引信息 */
+  const IndexInfo *inner_index_info_;
+
+  std::unique_ptr<AbstractExecutor> child_executor_;
+
+  BPlusTreeIndex<KeyType, ValueType, KeyComparator> *GetBPlusTreeIndex() {
+    return dynamic_cast<BPlusTreeIndex<KeyType, ValueType, KeyComparator> *>(inner_index_info_->index_.get());
+  }
+
+  bool Probe(Tuple *left_tuple, Tuple *right_raw_tuple);
 };
 }  // namespace bustub

@@ -51,5 +51,10 @@ class DeleteExecutor : public AbstractExecutor {
   const DeletePlanNode *plan_;
   /** The child executor to obtain rid from. */
   std::unique_ptr<AbstractExecutor> child_executor_;
+
+  // lab3 tesk2 add
+  std::vector<IndexInfo *> table_indexes;
+  /** Metadata identifying the table that should be deleted. */
+  const TableMetadata *table_info_;
 };
 }  // namespace bustub
